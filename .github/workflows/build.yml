@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   schedule:
     - cron: "0 0 * * 0"
 
@@ -71,11 +74,28 @@ jobs:
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Log in to GitHub Container Registry
+        if: github.ref_name == 'main'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
           username: zhongruoyu
           password: ${{ github.token }}
+
+      - name: Set up build
+        id: setup_build
+        run: |
+          {
+            echo "cache_from=type=registry,ref=$BUILD_CACHE_REPOSITORY:$ARCH"
+            if [[ "$PUSH" = true ]]; then
+              echo "cache_to=type=registry,ref=$BUILD_CACHE_REPOSITORY:$ARCH,mode=max"
+            else
+              echo "cache_to="
+            fi
+          } >> "$GITHUB_OUTPUT"
+        env:
+          PUSH: ${{ github.ref_name == 'main' }}
+          BUILD_CACHE_REPOSITORY: ghcr.io/zhongruoyu/mold-nightly/mold-builder/cache
+          ARCH: ${{ matrix.arch }}
 
       - name: Build Docker image
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
@@ -83,9 +103,9 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           tags: ghcr.io/zhongruoyu/mold-nightly/mold-builder:${{ matrix.arch }}
           file: ${{ matrix.arch }}.Dockerfile
-          cache-from: type=registry,ref=ghcr.io/zhongruoyu/mold-nightly/mold-builder/cache:${{ matrix.arch }}
-          cache-to: type=registry,ref=ghcr.io/zhongruoyu/mold-nightly/mold-builder/cache:${{ matrix.arch }},mode=max
-          push: true
+          cache-from: ${{ steps.setup_build.outputs.cache_from }}
+          cache-to: ${{ steps.setup_build.outputs.cache_to }}
+          push: ${{ github.ref_name == 'main' }}
 
   build:
     needs: [prepare, mold-builder]
@@ -173,6 +193,7 @@ jobs:
           path: 'mold/${{ steps.build_mold.outputs.build_output }}'
 
   publish:
+    if: github.ref_name == 'main'
     needs: [prepare, build]
     name: Publish build
     runs-on: ubuntu-latest
