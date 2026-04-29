@@ -16,12 +16,12 @@ jobs:
   prepare:
     name: Prepare build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       mold_stable_commit_sha: ${{ steps.determine_versions.outputs.mold_stable_commit_sha }}
-      mold_stable_commit_date: ${{ steps.determine_versions.outputs.mold_stable_commit_date }}
       mold_stable_version: ${{ steps.determine_versions.outputs.mold_stable_version }}
       mold_nightly_commit_sha: ${{ steps.determine_versions.outputs.mold_nightly_commit_sha }}
-      mold_nightly_commit_date: ${{ steps.determine_versions.outputs.mold_nightly_commit_date }}
       mold_nightly_version: ${{ steps.determine_versions.outputs.mold_nightly_version }}
     steps:
       - name: Determine versions
@@ -32,25 +32,63 @@ jobs:
           mold_stable_tag="$(gh api /repos/rui314/mold/releases/latest -q .tag_name)"
           mold_stable_commit_info="$(gh api "/repos/rui314/mold/commits/tags/$mold_stable_tag")"
           mold_stable_commit_sha="$(jq --raw-output .sha <<<"$mold_stable_commit_info")"
-          mold_stable_commit_date="$(jq --raw-output .commit.committer.date <<<"$mold_stable_commit_info")"
           mold_stable_version="${mold_stable_tag#v}"
 
           mold_nightly_commit_info="$(gh api /repos/rui314/mold/commits/heads/main)"
           mold_nightly_commit_sha="$(jq --raw-output .sha <<<"$mold_nightly_commit_info")"
-          mold_nightly_commit_date="$(jq --raw-output .commit.committer.date <<<"$mold_nightly_commit_info")"
           mold_nightly_version="nightly"
 
           {
             echo "mold_stable_commit_sha=$mold_stable_commit_sha"
-            echo "mold_stable_commit_date=$mold_stable_commit_date"
             echo "mold_stable_version=$mold_stable_version"
             echo "mold_nightly_commit_sha=$mold_nightly_commit_sha"
-            echo "mold_nightly_commit_date=$mold_nightly_commit_date"
             echo "mold_nightly_version=$mold_nightly_version"
           } | tee -a "$GITHUB_OUTPUT"
 
-  build:
+  mold-builder:
     needs: prepare
+    strategy:
+      matrix:
+        arch:
+          - x86_64
+          - aarch64
+          - arm
+          - riscv64
+          - ppc64le
+          - s390x
+          - loongarch64
+      fail-fast: false
+    name: Build mold builder (${{ matrix.arch }})
+    runs-on: ${{ contains(fromJSON('["aarch64", "arm"]'), matrix.arch) && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: zhongruoyu
+          password: ${{ github.token }}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          platforms: linux/${{ matrix.arch }}
+          tags: ghcr.io/zhongruoyu/mold-nightly/mold-builder:${{ matrix.arch }}
+          file: ${{ matrix.arch }}.Dockerfile
+          cache-from: type=registry,ref=ghcr.io/zhongruoyu/mold-nightly/mold-builder/cache:${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/zhongruoyu/mold-nightly/mold-builder/cache:${{ matrix.arch }},mode=max
+          push: true
+
+  build:
+    needs: [prepare, mold-builder]
     strategy:
       matrix:
         arch:
@@ -67,6 +105,9 @@ jobs:
       fail-fast: false
     name: Build (${{ matrix.arch }} ${{ matrix.variant }})
     runs-on: ${{ contains(fromJSON('["aarch64", "arm"]'), matrix.arch) && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -79,44 +120,31 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: zhongruoyu
+          password: ${{ github.token }}
+
       - name: Set up build
         id: setup_build
         run: |
           case '${{ matrix.variant }}' in
           stable)
             mold_commit_sha='${{ needs.prepare.outputs.mold_stable_commit_sha }}'
-            mold_commit_date='${{ needs.prepare.outputs.mold_stable_commit_date }}'
             build_prefix='mold-${{ needs.prepare.outputs.mold_stable_version }}-${{ matrix.arch }}-linux'
             ;;
           nightly)
             mold_commit_sha='${{ needs.prepare.outputs.mold_nightly_commit_sha }}'
-            mold_commit_date='${{ needs.prepare.outputs.mold_nightly_commit_date }}'
             build_prefix='mold-${{ needs.prepare.outputs.mold_nightly_version }}-${{ matrix.arch }}-linux'
             ;;
           esac
 
-          docker_platform='linux/${{ matrix.arch }}'
-          docker_image='mold-builder-${{ matrix.arch }}'
-          docker_file='${{ matrix.arch }}.Dockerfile'
-
           {
             echo "mold_commit_sha=$mold_commit_sha"
-            echo "mold_commit_date=$mold_commit_date"
             echo "build_prefix=$build_prefix"
-            echo "docker_platform=$docker_platform"
-            echo "docker_image=$docker_image"
-            echo "docker_file=$docker_file"
           } | tee -a "$GITHUB_OUTPUT"
-
-      - name: Build Docker image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
-        with:
-          platforms: ${{ steps.setup_build.outputs.docker_platform }}
-          tags: ${{ steps.setup_build.outputs.docker_image }}
-          file: ${{ steps.setup_build.outputs.docker_file }}
-          cache-from: type=gha
-          cache-to: type=gha
-          outputs: type=docker
 
       - name: Build mold
         id: build_mold
@@ -127,12 +155,12 @@ jobs:
           docker run \
             --rm \
             --interactive \
-            --platform='${{ steps.setup_build.outputs.docker_platform }}' \
+            --platform='linux/${{ matrix.arch }}' \
             --mount="type=bind,src=$PWD/mold,dst=/usr/local/src/mold" \
             --workdir="/usr/local/src/mold" \
             --env='BUILD_PREFIX=${{ steps.setup_build.outputs.build_prefix }}' \
             --env=TIMESTAMP="$(git -C mold log -1 --format=%ct)" \
-            '${{ steps.setup_build.outputs.docker_image }}' \
+            'ghcr.io/zhongruoyu/mold-nightly/mold-builder:${{ matrix.arch }}' \
             ${{ matrix.arch == 'arm' && 'setarch linux32' || '' }} ./build-mold.sh
           build_output='${{ steps.setup_build.outputs.build_prefix }}.tar.gz'
           echo "build_output=$build_output" | tee -a "$GITHUB_OUTPUT"
