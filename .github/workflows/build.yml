@@ -317,6 +317,7 @@ jobs:
         run: |
           gh release create \
             --repo="$GITHUB_REPOSITORY" \
+            --target="$GITHUB_SHA" \
             --title="$RELEASE_TITLE" \
             --notes-file="$NOTES_FILE" \
             --latest \
