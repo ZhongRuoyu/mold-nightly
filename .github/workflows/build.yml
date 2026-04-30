@@ -1,4 +1,4 @@
-name: build
+name: Build mold stable and nightly builds
 
 on:
   workflow_dispatch:
@@ -12,8 +12,12 @@ on:
     - cron: "0 0 * * 0"
 
 concurrency:
-  group: build
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  BUILDER_REPOSITORY: ghcr.io/zhongruoyu/mold-nightly/mold-builder
+  BUILD_CACHE_REPOSITORY: ghcr.io/zhongruoyu/mold-nightly/mold-builder/cache
 
 jobs:
   prepare:
@@ -22,29 +26,39 @@ jobs:
     permissions:
       contents: read
     outputs:
-      mold_stable_commit_sha: ${{ steps.determine_versions.outputs.mold_stable_commit_sha }}
-      mold_stable_version: ${{ steps.determine_versions.outputs.mold_stable_version }}
-      mold_nightly_commit_sha: ${{ steps.determine_versions.outputs.mold_nightly_commit_sha }}
-      mold_nightly_version: ${{ steps.determine_versions.outputs.mold_nightly_version }}
+      tag_name: ${{ steps.determine_build_attributes.outputs.tag_name }}
+      mold_stable_commit_sha: ${{ steps.determine_build_attributes.outputs.mold_stable_commit_sha }}
+      mold_stable_commit_date: ${{ steps.determine_build_attributes.outputs.mold_stable_commit_date }}
+      mold_stable_version: ${{ steps.determine_build_attributes.outputs.mold_stable_version }}
+      mold_nightly_commit_sha: ${{ steps.determine_build_attributes.outputs.mold_nightly_commit_sha }}
+      mold_nightly_commit_date: ${{ steps.determine_build_attributes.outputs.mold_nightly_commit_date }}
+      mold_nightly_version: ${{ steps.determine_build_attributes.outputs.mold_nightly_version }}
     steps:
-      - name: Determine versions
-        id: determine_versions
+      - name: Determine build attributes
+        id: determine_build_attributes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          tag_name="$(date -u +%Y%m%dT%H%M%SZ)"
+
           mold_stable_tag="$(gh api /repos/rui314/mold/releases/latest -q .tag_name)"
           mold_stable_commit_info="$(gh api "/repos/rui314/mold/commits/tags/$mold_stable_tag")"
           mold_stable_commit_sha="$(jq --raw-output .sha <<<"$mold_stable_commit_info")"
+          mold_stable_commit_date="$(jq --raw-output .commit.committer.date <<<"$mold_stable_commit_info")"
           mold_stable_version="${mold_stable_tag#v}"
 
           mold_nightly_commit_info="$(gh api /repos/rui314/mold/commits/heads/main)"
           mold_nightly_commit_sha="$(jq --raw-output .sha <<<"$mold_nightly_commit_info")"
+          mold_nightly_commit_date="$(jq --raw-output .commit.committer.date <<<"$mold_nightly_commit_info")"
           mold_nightly_version="nightly"
 
           {
+            echo "tag_name=$tag_name"
             echo "mold_stable_commit_sha=$mold_stable_commit_sha"
+            echo "mold_stable_commit_date=$mold_stable_commit_date"
             echo "mold_stable_version=$mold_stable_version"
             echo "mold_nightly_commit_sha=$mold_nightly_commit_sha"
+            echo "mold_nightly_commit_date=$mold_nightly_commit_date"
             echo "mold_nightly_version=$mold_nightly_version"
           } | tee -a "$GITHUB_OUTPUT"
 
@@ -66,6 +80,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      ARCH: ${{ matrix.arch }}
     steps:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -83,29 +99,29 @@ jobs:
 
       - name: Set up build
         id: setup_build
+        env:
+          PUSH: ${{ github.ref_name == 'main' }}
         run: |
           {
             echo "cache_from=type=registry,ref=$BUILD_CACHE_REPOSITORY:$ARCH"
             if [[ "$PUSH" = true ]]; then
               echo "cache_to=type=registry,ref=$BUILD_CACHE_REPOSITORY:$ARCH,mode=max"
+              echo "push=true"
             else
               echo "cache_to="
+              echo "push=false"
             fi
           } >> "$GITHUB_OUTPUT"
-        env:
-          PUSH: ${{ github.ref_name == 'main' }}
-          BUILD_CACHE_REPOSITORY: ghcr.io/zhongruoyu/mold-nightly/mold-builder/cache
-          ARCH: ${{ matrix.arch }}
 
       - name: Build Docker image
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
-          platforms: linux/${{ matrix.arch }}
-          tags: ghcr.io/zhongruoyu/mold-nightly/mold-builder:${{ matrix.arch }}
-          file: ${{ matrix.arch }}.Dockerfile
+          platforms: linux/${{ env.ARCH }}
+          tags: ${{ env.BUILDER_REPOSITORY }}:${{ env.ARCH }}
+          file: ${{ env.ARCH }}.Dockerfile
           cache-from: ${{ steps.setup_build.outputs.cache_from }}
           cache-to: ${{ steps.setup_build.outputs.cache_to }}
-          push: ${{ github.ref_name == 'main' }}
+          push: ${{ steps.setup_build.outputs.push }}
 
   build:
     needs: [prepare, mold-builder]
@@ -128,6 +144,9 @@ jobs:
     permissions:
       contents: read
       packages: read
+    env:
+      ARCH: ${{ matrix.arch }}
+      VARIANT: ${{ matrix.variant }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -149,48 +168,63 @@ jobs:
 
       - name: Set up build
         id: setup_build
+        env:
+          MOLD_STABLE_COMMIT_SHA: ${{ needs.prepare.outputs.mold_stable_commit_sha }}
+          MOLD_STABLE_COMMIT_DATE: ${{ needs.prepare.outputs.mold_stable_commit_date }}
+          MOLD_STABLE_VERSION: ${{ needs.prepare.outputs.mold_stable_version }}
+          MOLD_NIGHTLY_COMMIT_SHA: ${{ needs.prepare.outputs.mold_nightly_commit_sha }}
+          MOLD_NIGHTLY_COMMIT_DATE: ${{ needs.prepare.outputs.mold_nightly_commit_date }}
+          MOLD_NIGHTLY_VERSION: ${{ needs.prepare.outputs.mold_nightly_version }}
         run: |
-          case '${{ matrix.variant }}' in
+          case "$VARIANT" in
           stable)
-            mold_commit_sha='${{ needs.prepare.outputs.mold_stable_commit_sha }}'
-            build_prefix='mold-${{ needs.prepare.outputs.mold_stable_version }}-${{ matrix.arch }}-linux'
+            build_config="mold-$MOLD_STABLE_VERSION-$ARCH-linux"
+            mold_commit_sha="$MOLD_STABLE_COMMIT_SHA"
+            mold_commit_timestamp="$(date --utc --date="$MOLD_STABLE_COMMIT_DATE" +%s)"
             ;;
           nightly)
-            mold_commit_sha='${{ needs.prepare.outputs.mold_nightly_commit_sha }}'
-            build_prefix='mold-${{ needs.prepare.outputs.mold_nightly_version }}-${{ matrix.arch }}-linux'
+            build_config="mold-$MOLD_NIGHTLY_VERSION-$ARCH-linux"
+            mold_commit_sha="$MOLD_NIGHTLY_COMMIT_SHA"
+            mold_commit_timestamp="$(date --utc --date="$MOLD_NIGHTLY_COMMIT_DATE" +%s)"
             ;;
           esac
 
           {
+            echo "build_config=$build_config"
             echo "mold_commit_sha=$mold_commit_sha"
-            echo "build_prefix=$build_prefix"
+            echo "mold_commit_timestamp=$mold_commit_timestamp"
           } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Checkout mold
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: rui314/mold
+          ref: ${{ steps.setup_build.outputs.mold_commit_sha }}
+          path: mold
+          persist-credentials: false
 
       - name: Build mold
         id: build_mold
+        env:
+          BUILD_CONFIG: ${{ steps.setup_build.outputs.build_config }}
+          MOLD_COMMIT_TIMESTAMP: ${{ steps.setup_build.outputs.mold_commit_timestamp }}
+          SETARCH_COMMAND: ${{ matrix.arch == 'arm' && 'setarch linux32' || '' }}
         run: |
-          git clone https://github.com/rui314/mold.git mold
-          git -C mold checkout '${{ steps.setup_build.outputs.mold_commit_sha }}'
-          cp build-mold.sh mold/
           docker run \
             --rm \
-            --interactive \
-            --platform='linux/${{ matrix.arch }}' \
+            --platform="linux/$ARCH" \
             --mount="type=bind,src=$PWD/mold,dst=/usr/local/src/mold" \
+            --mount="type=bind,src=$PWD/build-mold.sh,dst=/usr/local/src/mold/build-mold.sh" \
             --workdir="/usr/local/src/mold" \
-            --env='BUILD_PREFIX=${{ steps.setup_build.outputs.build_prefix }}' \
-            --env=TIMESTAMP="$(git -C mold log -1 --format=%ct)" \
-            'ghcr.io/zhongruoyu/mold-nightly/mold-builder:${{ matrix.arch }}' \
-            ${{ matrix.arch == 'arm' && 'setarch linux32' || '' }} ./build-mold.sh
-          build_output='${{ steps.setup_build.outputs.build_prefix }}.tar.gz'
-          echo "build_output=$build_output" | tee -a "$GITHUB_OUTPUT"
+            "$BUILDER_REPOSITORY:$ARCH" \
+            $SETARCH_COMMAND ./build-mold.sh "$BUILD_CONFIG" "$MOLD_COMMIT_TIMESTAMP"
 
       - name: Upload build output
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ steps.build_mold.outputs.build_output }}
-          path: 'mold/${{ steps.build_mold.outputs.build_output }}'
+          name: ${{ steps.setup_build.outputs.build_config }}
+          path: mold/${{ steps.setup_build.outputs.build_config }}.tar.gz
 
   publish:
     if: github.ref_name == 'main'
@@ -199,12 +233,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
       - name: Download build outputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -214,12 +245,15 @@ jobs:
 
       - name: Get versions
         id: get_versions
+        env:
+          MOLD_STABLE_VERSION: ${{ needs.prepare.outputs.mold_stable_version }}
+          MOLD_NIGHTLY_VERSION: ${{ needs.prepare.outputs.mold_nightly_version }}
         run: |
-          stable_build='mold-${{ needs.prepare.outputs.mold_stable_version }}-x86_64-linux'
+          stable_build="mold-$MOLD_STABLE_VERSION-x86_64-linux"
           tar -xzf "mold/$stable_build.tar.gz"
           mold_stable_version_string="$("$stable_build/bin/mold" -v)"
 
-          nightly_build='mold-${{ needs.prepare.outputs.mold_nightly_version }}-x86_64-linux'
+          nightly_build="mold-$MOLD_NIGHTLY_VERSION-x86_64-linux"
           tar -xzf "mold/$nightly_build.tar.gz"
           mold_nightly_version_string="$("$nightly_build/bin/mold" -v)"
 
@@ -239,39 +273,24 @@ jobs:
             echo "EOF"
           } | tee -a "$GITHUB_OUTPUT"
 
-      - name: Determine release tag name
-        id: determine_tag_name
-        run: |
-          date="$(date +%Y%m%d)"
-          tag_name=""
-
-          for revision in {0..15}; do
-            if [[ -z "$(git ls-remote --tags origin "refs/tags/$date.$revision")" ]]; then
-              tag_name="$date.$revision"
-              break
-            fi
-          done
-          if [[ -z "$tag_name" ]]; then
-            echo "Error: too many revisions on $date. Aborting." >&2
-            exit 1
-          fi
-
-          echo "tag_name=$tag_name" | tee -a "$GITHUB_OUTPUT"
-
       - name: Generate release notes
         id: release_notes
+        env:
+          MOLD_STABLE_VERSION_STRING: ${{ steps.get_versions.outputs.mold_stable_version_string }}
+          MOLD_NIGHTLY_VERSION_STRING: ${{ steps.get_versions.outputs.mold_nightly_version_string }}
+          SHA256SUMS: ${{ steps.compute_checksums.outputs.sha256sums }}
         run: |
-          release_title='mold nightly builds ${{ steps.determine_tag_name.outputs.tag_name }}'
+          release_title="mold nightly builds $TAG_NAME"
           notes_file="release-notes.md"
-          cat <<'EOF' | tee -a "$notes_file"
-          Stable: `${{ steps.get_versions.outputs.mold_stable_version_string }}`
+          cat <<EOF | tee -a "$notes_file"
+          Stable: \`$MOLD_STABLE_VERSION_STRING\`
 
-          Nightly: `${{ steps.get_versions.outputs.mold_nightly_version_string }}`
+          Nightly: \`$MOLD_NIGHTLY_VERSION_STRING\`
 
           SHA-256 checksums:
-          ```
-          ${{ steps.compute_checksums.outputs.sha256sums }}
-          ```
+          \`\`\`
+          $SHA256SUMS
+          \`\`\`
 
           EOF
           {
@@ -282,11 +301,14 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TITLE: ${{ steps.release_notes.outputs.release_title }}
+          NOTES_FILE: ${{ steps.release_notes.outputs.notes_file }}
         run: |
           gh release create \
+            --repo="$GITHUB_REPOSITORY" \
+            --title="$RELEASE_TITLE" \
+            --notes-file="$NOTES_FILE" \
             --latest \
-            --title='${{ steps.release_notes.outputs.release_title }}' \
-            --notes-file='${{ steps.release_notes.outputs.notes_file }}' \
-            '${{ steps.determine_tag_name.outputs.tag_name }}' \
+            "$TAG_NAME" \
             mold/mold*.tar.gz \
             mold/SHA256SUMS
