@@ -26,21 +26,20 @@ jobs:
     permissions:
       contents: read
     outputs:
-      tag_name: ${{ steps.determine_build_attributes.outputs.tag_name }}
       mold_stable_commit_sha: ${{ steps.determine_build_attributes.outputs.mold_stable_commit_sha }}
       mold_stable_commit_date: ${{ steps.determine_build_attributes.outputs.mold_stable_commit_date }}
       mold_stable_version: ${{ steps.determine_build_attributes.outputs.mold_stable_version }}
       mold_nightly_commit_sha: ${{ steps.determine_build_attributes.outputs.mold_nightly_commit_sha }}
       mold_nightly_commit_date: ${{ steps.determine_build_attributes.outputs.mold_nightly_commit_date }}
       mold_nightly_version: ${{ steps.determine_build_attributes.outputs.mold_nightly_version }}
+      tag_name: ${{ steps.determine_build_attributes.outputs.tag_name }}
+      build: ${{ steps.determine_build_attributes.outputs.build }}
     steps:
       - name: Determine build attributes
         id: determine_build_attributes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag_name="$(date -u +%Y%m%dT%H%M%SZ)"
-
           mold_stable_tag="$(gh api /repos/rui314/mold/releases/latest -q .tag_name)"
           mold_stable_commit_info="$(gh api "/repos/rui314/mold/commits/tags/$mold_stable_tag")"
           mold_stable_commit_sha="$(jq --raw-output .sha <<<"$mold_stable_commit_info")"
@@ -50,20 +49,31 @@ jobs:
           mold_nightly_commit_info="$(gh api /repos/rui314/mold/commits/heads/main)"
           mold_nightly_commit_sha="$(jq --raw-output .sha <<<"$mold_nightly_commit_info")"
           mold_nightly_commit_date="$(jq --raw-output .commit.committer.date <<<"$mold_nightly_commit_info")"
-          mold_nightly_version="nightly"
+          mold_nightly_version="$(date --utc --date="$mold_nightly_commit_date" +%Y%m%dT%H%M%SZ)"
+
+          tag_name="$mold_stable_tag-$mold_nightly_version"
+          if [[ "$GITHUB_REF_NAME" != "main" ]]; then
+            build=true
+          elif gh release view --repo "$GITHUB_REPOSITORY" "$tag_name" &>/dev/null; then
+            build=false
+          else
+            build=true
+          fi
 
           {
-            echo "tag_name=$tag_name"
             echo "mold_stable_commit_sha=$mold_stable_commit_sha"
             echo "mold_stable_commit_date=$mold_stable_commit_date"
             echo "mold_stable_version=$mold_stable_version"
             echo "mold_nightly_commit_sha=$mold_nightly_commit_sha"
             echo "mold_nightly_commit_date=$mold_nightly_commit_date"
             echo "mold_nightly_version=$mold_nightly_version"
+            echo "tag_name=$tag_name"
+            echo "build=$build"
           } | tee -a "$GITHUB_OUTPUT"
 
   mold-builder:
     needs: prepare
+    if: fromJson(needs.prepare.outputs.build)
     strategy:
       matrix:
         arch:
@@ -125,6 +135,7 @@ jobs:
 
   build:
     needs: [prepare, mold-builder]
+    if: fromJson(needs.prepare.outputs.build)
     strategy:
       matrix:
         arch:
@@ -227,7 +238,7 @@ jobs:
           path: mold/${{ steps.setup_build.outputs.build_config }}.tar.gz
 
   publish:
-    if: github.ref_name == 'main'
+    if: fromJson(needs.prepare.outputs.build) && github.ref_name == 'main'
     needs: [prepare, build]
     name: Publish build
     runs-on: ubuntu-latest
