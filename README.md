@@ -1,6 +1,6 @@
 # mold nightly builds
 
-This repository holds ~~nightly~~ weekly builds of the
+This repository holds nightly builds of the
 [mold linker](https://github.com/rui314/mold) for GNU/Linux.
 
 The following architectures are available: x86_64, aarch64, arm, riscv64,
