@@ -4,7 +4,7 @@ This repository holds ~~nightly~~ weekly builds of the
 [mold linker](https://github.com/rui314/mold) for GNU/Linux.
 
 The following architectures are available: x86_64, aarch64, arm, riscv64,
-ppc64le, s390x.
+ppc64le, s390x, loongarch64.
 
 ## Download
 
