@@ -15,6 +15,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
 env:
   BUILDER_REPOSITORY: ghcr.io/zhongruoyu/mold-nightly/mold-builder
   BUILD_CACHE_REPOSITORY: ghcr.io/zhongruoyu/mold-nightly/mold-builder/cache
