@@ -107,6 +107,17 @@ jobs:
           username: zhongruoyu
           password: ${{ github.token }}
 
+      - name: Determine Docker image metadata
+        id: docker_metadata
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: |
+            ${{ env.BUILDER_REPOSITORY }}
+          flavor: |
+            latest=false
+          tags: |
+            ${{ env.ARCH }}
+
       - name: Set up build
         id: setup_build
         env:
@@ -127,7 +138,8 @@ jobs:
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           platforms: linux/${{ env.ARCH }}
-          tags: ${{ env.BUILDER_REPOSITORY }}:${{ env.ARCH }}
+          tags: ${{ steps.docker_metadata.outputs.tags }}
+          labels: ${{ steps.docker_metadata.outputs.labels }}
           file: ${{ env.ARCH }}.Dockerfile
           cache-from: ${{ steps.setup_build.outputs.cache_from }}
           cache-to: ${{ steps.setup_build.outputs.cache_to }}
