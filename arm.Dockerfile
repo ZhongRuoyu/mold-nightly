@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive TZ=UTC
 RUN sed -i -e '/^deb/d' -e 's/^# deb /deb /g' /etc/apt/sources.list && \
   echo 'Acquire::Retries "10"; Acquire::http::timeout "10"; Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/80-retries && \
   apt-get update && \
-  apt-get install -y --no-install-recommends build-essential gcc-10 g++-10 clang-16 cmake && \
+  apt-get install -y --no-install-recommends build-essential gcc-10 g++-10 clang-16 cmake git && \
   ln -sf /usr/bin/clang-16 /usr/bin/clang && \
   ln -sf /usr/bin/clang++-16 /usr/bin/clang++ && \
   rm -rf /var/lib/apt/lists
